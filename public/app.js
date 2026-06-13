@@ -25,20 +25,39 @@ function downloadJSON(data, filename) {
     URL.revokeObjectURL(url);
 }
 
+// Drop null / undefined / empty-string values so each event only carries the
+// fields it actually has (field set and count differ per type).
+function omitEmpty(obj) {
+    const out = {};
+    for (const key of Object.keys(obj)) {
+        const value = obj[key];
+        if (value !== null && value !== undefined && value !== '') out[key] = value;
+    }
+    return out;
+}
+
+// Build one timeline event. Each type contributes only its own fields.
+function buildEvent(timestamp, type, fields) {
+    return {timestamp, type, fields: omitEmpty(fields)};
+}
+
 // Merge chats, gifts and transcript into one timeline-ordered file (by timestamp).
 function downloadAll() {
     const events = [];
 
-    chatHistory.forEach(c => events.push({
-        timestamp: c.timestamp, type: 'chat', user: c.uniqueId, text: c.comment,
-    }));
-    giftHistory.forEach(g => events.push({
-        timestamp: g.timestamp, type: 'gift', user: g.uniqueId,
-        giftName: g.giftName, repeatCount: g.repeatCount, diamondCount: g.diamondCount,
-    }));
-    transcriptHistory.forEach(t => events.push({
-        timestamp: t.timestamp, type: 'transcript', text: t.text,
-    }));
+    chatHistory.forEach(c => events.push(buildEvent(c.timestamp, 'chat', {
+        user: c.uniqueId,
+        text: c.comment,
+    })));
+    giftHistory.forEach(g => events.push(buildEvent(g.timestamp, 'gift', {
+        user: g.uniqueId,
+        giftName: g.giftName,
+        repeatCount: g.repeatCount,
+        diamondCount: g.diamondCount,
+    })));
+    transcriptHistory.forEach(t => events.push(buildEvent(t.timestamp, 'transcript', {
+        text: t.text,
+    })));
 
     if (!events.length) {
         alert('Nothing to download yet.');
@@ -47,10 +66,11 @@ function downloadAll() {
 
     events.sort((a, b) => a.timestamp - b.timestamp);
 
-    // Replace raw epoch with a readable ISO time, keeping events ordered by timeline.
-    const timeline = events.map(({timestamp, ...rest}) => ({
-        time: new Date(timestamp).toISOString(),
-        ...rest,
+    // time + type first, then only that type's own fields.
+    const timeline = events.map(e => ({
+        time: new Date(e.timestamp).toISOString(),
+        type: e.type,
+        ...e.fields,
     }));
 
     // Filename: <streamer id>_<start>_<end>  (start/end = first/last captured event)
