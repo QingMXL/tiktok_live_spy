@@ -1,6 +1,8 @@
 require('dotenv').config();
 
 const crypto = require('crypto');
+const http = require('http');
+const https = require('https');
 const express = require('express');
 const {createServer} = require('http');
 const {Server} = require('socket.io');
@@ -8,6 +10,7 @@ const NodeCache = require('node-cache');
 const {HttpsProxyAgent} = require('https-proxy-agent');
 const {TikTokConnectionWrapper, getGlobalConnectionCount} = require('./connectionWrapper');
 const {clientBlocked} = require('./limiter');
+const {startTranscription, extractStreamUrls} = require('./transcription');
 const {SignConfig} = require('tiktok-live-connector');
 
 if (process.env.API_KEY) {
@@ -23,6 +26,9 @@ const proxyAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : null;
 if (proxyAgent) {
     console.info(`Routing TikTok traffic through proxy ${proxyUrl}`);
 }
+
+// Whether to run local Whisper transcription of the host's audio (on by default).
+const transcriptionEnabled = !['0', 'false', 'no'].includes(String(process.env.ENABLE_TRANSCRIPTION || '').toLowerCase());
 
 // Event names forwarded from the TikTok connection to the browser.
 const FORWARDED_EVENTS = [
@@ -133,6 +139,14 @@ async function verifyRecaptcha(token) {
 
 io.on('connection', (socket) => {
     let tiktokConnectionWrapper;
+    let transcription = null;
+
+    const stopTranscription = () => {
+        if (transcription) {
+            transcription.stop();
+            transcription = null;
+        }
+    };
 
     console.info('New connection from origin', socket.handshake.headers['origin'] || socket.handshake.headers['referer']);
 
@@ -189,6 +203,7 @@ io.on('connection', (socket) => {
         if (tiktokConnectionWrapper) {
             tiktokConnectionWrapper.disconnect();
         }
+        stopTranscription();
 
         // Fetch the room gift list on connect so gift events carry name / diamond
         // cost / image (via extendedGiftInfo), which TikTok omits from the raw event.
@@ -207,11 +222,33 @@ io.on('connection', (socket) => {
         }
 
         // Redirect wrapper control events once
-        tiktokConnectionWrapper.once('connected', state => socket.emit('tiktokConnected', sanitize(state)));
-        tiktokConnectionWrapper.once('disconnected', reason => socket.emit('tiktokDisconnected', reason));
+        tiktokConnectionWrapper.once('connected', state => {
+            socket.emit('tiktokConnected', sanitize(state));
+
+            // Expose the live video (HLS, proxied) and start audio transcription.
+            const roomInfo = tiktokConnectionWrapper.connection.roomInfo;
+            const {hls, audio} = extractStreamUrls(roomInfo);
+            socket.emit('streamInfo', {
+                hls: hls ? `/hls?url=${encodeURIComponent(hls)}` : null,
+                transcription: transcriptionEnabled && !!audio,
+            });
+
+            if (transcriptionEnabled && audio) {
+                socket.emit('transcript', {type: 'status', message: 'starting transcription…'});
+                transcription = startTranscription(audio, {
+                    proxy: proxyUrl,
+                    onEvent: (event) => socket.emit('transcript', event),
+                    onLog: (line) => { if (/error|exited/i.test(line)) console.warn('[transcription]', line); },
+                });
+            }
+        });
+        tiktokConnectionWrapper.once('disconnected', reason => {
+            stopTranscription();
+            socket.emit('tiktokDisconnected', reason);
+        });
 
         // Notify client when stream ends
-        tiktokConnectionWrapper.connection.on('streamEnd', () => socket.emit('streamEnd'));
+        tiktokConnectionWrapper.connection.on('streamEnd', () => { stopTranscription(); socket.emit('streamEnd'); });
 
         // Redirect message events (payloads sanitized so socket.io can serialize them)
         FORWARDED_EVENTS.forEach(eventName => {
@@ -220,6 +257,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect_tiktok', () => {
+        stopTranscription();
         if (tiktokConnectionWrapper) {
             tiktokConnectionWrapper.disconnect();
             tiktokConnectionWrapper = null;
@@ -227,6 +265,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
+        stopTranscription();
         if (tiktokConnectionWrapper) {
             tiktokConnectionWrapper.disconnect();
         }
@@ -269,6 +308,65 @@ app.post('/generate-overlay-token', express.json(), async (req, res) => {
     } catch (err) {
         console.error('reCAPTCHA verification error:', err);
         return res.status(500).json({ error: 'Verification error' });
+    }
+});
+
+// Fetch a URL through the TikTok proxy (if configured) and buffer the response.
+function proxiedFetch(url) {
+    return new Promise((resolve, reject) => {
+        const mod = url.startsWith('https') ? https : http;
+        const req = mod.get(url, {agent: proxyAgent || undefined, headers: {'User-Agent': 'Mozilla/5.0'}}, (res) => {
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => resolve({status: res.statusCode || 0, headers: res.headers, body: Buffer.concat(chunks)}));
+        });
+        req.on('error', reject);
+        req.setTimeout(15000, () => req.destroy(new Error('upstream timeout')));
+    });
+}
+
+const selfHls = (absoluteUrl) => `/hls?url=${encodeURIComponent(absoluteUrl)}`;
+
+// Rewrite playlist URIs (segments, sub-playlists, keys, maps) to route back
+// through this proxy, so the browser only ever talks to our origin.
+function rewritePlaylist(text, baseUrl) {
+    const base = new URL(baseUrl);
+    return text.split('\n').map((line) => {
+        const t = line.trim();
+        if (!t) return line;
+        if (t.startsWith('#')) {
+            // Rewrite URI="..." attributes (EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA).
+            return line.replace(/URI="([^"]+)"/g, (_m, uri) => `URI="${selfHls(new URL(uri, base).toString())}"`);
+        }
+        return selfHls(new URL(t, base).toString()); // segment or variant playlist
+    }).join('\n');
+}
+
+// HLS proxy: serves both playlists (rewritten) and binary media segments.
+app.get('/hls', async (req, res) => {
+    const url = req.query.url;
+    if (typeof url !== 'string' || !/^https?:\/\//.test(url)) {
+        return res.status(400).send('invalid url');
+    }
+    try {
+        const upstream = await proxiedFetch(url);
+        if (upstream.status < 200 || upstream.status >= 300) {
+            return res.status(upstream.status || 502).end();
+        }
+        const contentType = (upstream.headers['content-type'] || '').toLowerCase();
+        const isPlaylist = contentType.includes('mpegurl') || /\.m3u8(\?|$)/.test(url) || upstream.body.slice(0, 7).toString() === '#EXTM3U';
+
+        res.set('Cache-Control', 'no-store');
+        if (isPlaylist) {
+            res.set('Content-Type', 'application/vnd.apple.mpegurl');
+            res.send(rewritePlaylist(upstream.body.toString('utf8'), url));
+        } else {
+            res.set('Content-Type', contentType || 'video/mp2t');
+            res.send(upstream.body);
+        }
+    } catch (err) {
+        console.warn('[hls] proxy error:', err.message);
+        res.status(502).end();
     }
 });
 

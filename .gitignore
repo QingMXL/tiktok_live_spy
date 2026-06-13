@@ -5,6 +5,11 @@ node_modules/
 # Built output of the vendored connector library
 connector/dist/
 
+# Python transcriber virtualenv + caches (recreated via transcriber/requirements.txt)
+transcriber/.venv/
+__pycache__/
+*.pyc
+
 # Logs
 *.log
 npm-debug.log*

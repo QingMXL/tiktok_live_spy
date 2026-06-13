@@ -10,6 +10,10 @@ let diamondsCount = 0;
 // In-memory storage for downloads
 let chatHistory = [];
 let giftHistory = [];
+let transcriptHistory = [];
+
+// Live video (hls.js) instance
+let hlsPlayer = null;
 
 function downloadJSON(data, filename) {
     let blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
@@ -27,10 +31,12 @@ if (!window.settings) window.settings = {};
 // Auto-scroll toggles (per container, persisted)
 let autoScrollChat = localStorage.getItem('autoScrollChat') !== 'false';
 let autoScrollGift = localStorage.getItem('autoScrollGift') !== 'false';
+let autoScrollTranscript = localStorage.getItem('autoScrollTranscript') !== 'false';
 
 function updateAutoScrollButtons() {
     $('#chatAutoScroll').text(autoScrollChat ? 'Auto-scroll: ON' : 'Auto-scroll: OFF');
     $('#giftAutoScroll').text(autoScrollGift ? 'Auto-scroll: ON' : 'Auto-scroll: OFF');
+    $('#transcriptAutoScroll').text(autoScrollTranscript ? 'Auto-scroll: ON' : 'Auto-scroll: OFF');
 }
 
 function toggleChatAutoScroll() {
@@ -42,6 +48,12 @@ function toggleChatAutoScroll() {
 function toggleGiftAutoScroll() {
     autoScrollGift = !autoScrollGift;
     localStorage.setItem('autoScrollGift', autoScrollGift);
+    updateAutoScrollButtons();
+}
+
+function toggleTranscriptAutoScroll() {
+    autoScrollTranscript = !autoScrollTranscript;
+    localStorage.setItem('autoScrollTranscript', autoScrollTranscript);
     updateAutoScrollButtons();
 }
 
@@ -130,6 +142,10 @@ function connect() {
             diamondsCount = 0;
             updateRoomStats();
 
+            // reset transcript + video for the new stream
+            resetTranscript();
+            resetVideo();
+
         }).catch(errorMessage => {
             $('#stateText').text(errorMessage);
             setButtonState('idle');
@@ -151,6 +167,7 @@ function disconnect() {
     connection.disconnect();
     $('#stateText').text('');
     setButtonState('idle');
+    resetVideo();
 }
 
 // Prevent Cross site scripting (XSS)
@@ -357,11 +374,121 @@ connection.on('share', (data) => {
 connection.on('streamEnd', () => {
     $('#stateText').text('Stream ended. Reconnecting...');
     setButtonState('idle');
+    resetVideo();
 
     // schedule next try if obs username set
     if (window.settings.username) {
         setTimeout(() => {
             connect(window.settings.username);
         }, 30000);
+    }
+})
+
+// ---------------------------------------------------------------------------
+// Transcript column (host speech, via local Whisper streaming on the server)
+// ---------------------------------------------------------------------------
+
+function formatClock(date) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${p(date.getHours())}:${p(date.getMinutes())}:${p(date.getSeconds())}`;
+}
+
+function resetTranscript() {
+    transcriptHistory = [];
+    $('.transcriptcontainer > div.transcriptline').remove();
+    $('#transcriptPartial').text('');
+}
+
+function addTranscriptLine(text) {
+    const time = formatClock(new Date());
+    transcriptHistory.push({timestamp: Date.now(), time, text});
+
+    const container = $('.transcriptcontainer');
+    if (container.find('div.transcriptline').length > 500) {
+        container.find('div.transcriptline').slice(0, 200).remove();
+    }
+    // Insert before the live partial line so finals stack above it.
+    $(`<div class="transcriptline"><span class="ts">${time}</span> <span>${sanitize(text)}</span></div>`)
+        .insertBefore('#transcriptPartial');
+
+    if (autoScrollTranscript) {
+        container.stop();
+        container.animate({scrollTop: container[0].scrollHeight}, 300);
+    }
+}
+
+connection.on('transcript', (msg) => {
+    if (!msg || !msg.type) return;
+    if (msg.type === 'final' && msg.text) {
+        $('#transcriptPartial').text('');
+        addTranscriptLine(msg.text);
+    } else if (msg.type === 'partial') {
+        $('#transcriptPartial').text(msg.text || '');
+        if (msg.text && autoScrollTranscript) {
+            const c = $('.transcriptcontainer');
+            c.stop().animate({scrollTop: c[0].scrollHeight}, 150);
+        }
+    } else if (msg.type === 'language') {
+        $('.transcriptcontainer .containerheader > span:first-child').text(`Transcript (${msg.language})`);
+    } else if (msg.type === 'status') {
+        $('#transcriptPartial').text(msg.message || '');
+    }
+})
+
+// ---------------------------------------------------------------------------
+// Live video column (HLS via hls.js, proxied through our server)
+// ---------------------------------------------------------------------------
+
+function resetVideo() {
+    const video = document.getElementById('liveVideo');
+    if (hlsPlayer) {
+        try { hlsPlayer.destroy(); } catch (_) {}
+        hlsPlayer = null;
+    }
+    if (video) {
+        try { video.pause(); } catch (_) {}
+        video.removeAttribute('src');
+        video.load();
+    }
+    $('#videoNotice').text('Connect to a live user to load the video.').show();
+}
+
+function setupVideo(hlsUrl) {
+    const video = document.getElementById('liveVideo');
+    if (!video || !hlsUrl) {
+        $('#videoNotice').text('No video stream available for this user.').show();
+        return;
+    }
+    resetVideo();
+    $('#videoNotice').text('Loading video…').show();
+
+    const onPlaying = () => $('#videoNotice').hide();
+
+    if (window.Hls && window.Hls.isSupported()) {
+        hlsPlayer = new Hls({lowLatencyMode: true, liveSyncDurationCount: 3});
+        hlsPlayer.loadSource(hlsUrl);
+        hlsPlayer.attachMedia(video);
+        hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+        hlsPlayer.on(Hls.Events.ERROR, (_e, data) => {
+            if (data && data.fatal) {
+                $('#videoNotice').text('Video stream unavailable (CDN may be blocked on this network).').show();
+            }
+        });
+        video.addEventListener('playing', onPlaying, {once: true});
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Safari native HLS
+        video.src = hlsUrl;
+        video.addEventListener('loadedmetadata', () => video.play().catch(() => {}));
+        video.addEventListener('playing', onPlaying, {once: true});
+    } else {
+        $('#videoNotice').text('HLS not supported in this browser.').show();
+    }
+}
+
+connection.on('streamInfo', (info) => {
+    if (info && info.hls) {
+        setupVideo(info.hls);
+    } else {
+        $('#videoNotice').text('No video stream available for this user.').show();
     }
 })

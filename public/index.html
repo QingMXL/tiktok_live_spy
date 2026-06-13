@@ -18,6 +18,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.min.js" crossorigin="anonymous"
             referrerpolicy="no-referrer"></script>
 
+    <script src="vendor/hls.min.js"></script>
     <script src="connection.js"></script>
     <script src="app.js"></script>
 
@@ -167,6 +168,21 @@
     <div>
         <div class="giftcontainer">
             <h3 class="containerheader"><span>Gifts</span><span class="headeractions"><button class="downloadbtn" id="giftAutoScroll" onclick="toggleGiftAutoScroll()">Auto-scroll: ON</button><button class="downloadbtn" onclick="downloadJSON(giftHistory, 'gifts.json')">Download</button></span></h3>
+        </div>
+    </div>
+    <div>
+        <div class="transcriptcontainer">
+            <h3 class="containerheader"><span>Transcript</span><span class="headeractions"><button class="downloadbtn" id="transcriptAutoScroll" onclick="toggleTranscriptAutoScroll()">Auto-scroll: ON</button><button class="downloadbtn" onclick="downloadJSON(transcriptHistory, 'transcript.json')">Download</button></span></h3>
+            <div class="transcriptpartial" id="transcriptPartial"></div>
+        </div>
+    </div>
+    <div>
+        <div class="videocontainer">
+            <h3 class="containerheader"><span>Live Video</span></h3>
+            <div class="videowrap">
+                <video id="liveVideo" playsinline muted controls></video>
+                <div class="videonotice" id="videoNotice">Connect to a live user to load the video.</div>
+            </div>
         </div>
     </div>
 </div>

@@ -220,7 +220,7 @@ a:hover {
     color: var(--text);
 }
 
-.chatcontainer, .giftcontainer, .eventcontainer {
+.chatcontainer, .giftcontainer, .eventcontainer, .transcriptcontainer, .videocontainer {
     overflow-y: auto;
     flex: 1;
     min-height: 0;
@@ -234,15 +234,88 @@ a:hover {
     scrollbar-color: var(--border) transparent;
 }
 
+.videocontainer {
+    overflow: hidden;
+    padding-bottom: 0;
+    display: flex;
+    flex-direction: column;
+}
+
 .chatcontainer::-webkit-scrollbar,
-.giftcontainer::-webkit-scrollbar {
+.giftcontainer::-webkit-scrollbar,
+.transcriptcontainer::-webkit-scrollbar {
     width: 5px;
 }
 
 .chatcontainer::-webkit-scrollbar-thumb,
-.giftcontainer::-webkit-scrollbar-thumb {
+.giftcontainer::-webkit-scrollbar-thumb,
+.transcriptcontainer::-webkit-scrollbar-thumb {
     background: #d1d5db;
     border-radius: 3px;
+}
+
+/* Transcript column */
+.transcriptcontainer > div.transcriptline {
+    padding: 4px 8px 5px 8px;
+    border-radius: 6px;
+    line-height: 1.5;
+    font-size: 0.88em;
+}
+
+.transcriptcontainer > div.transcriptline:hover {
+    background: var(--bg-subtle);
+}
+
+.transcriptcontainer .ts {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.85em;
+    margin-right: 6px;
+    user-select: none;
+}
+
+.transcriptpartial {
+    padding: 4px 8px 5px 8px;
+    font-size: 0.88em;
+    line-height: 1.5;
+    color: var(--accent);
+    font-style: italic;
+    min-height: 1.2em;
+}
+
+/* Live video column */
+.videowrap {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.videowrap video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+}
+
+.videonotice {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 16px;
+    color: #cbd5e1;
+    font-size: 0.85em;
+    background: rgba(0, 0, 0, 0.6);
+    pointer-events: none;
 }
 
 .eventcontainer {
