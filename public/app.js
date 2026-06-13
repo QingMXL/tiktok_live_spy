@@ -46,11 +46,14 @@ function downloadAll() {
     const events = [];
 
     chatHistory.forEach(c => events.push(buildEvent(c.timestamp, 'chat', {
-        user: c.uniqueId,
+        user: c.nickname || c.uniqueId,   // TikTok only sends nickname for live events
+        userId: c.userId,
         text: c.comment,
     })));
     giftHistory.forEach(g => events.push(buildEvent(g.timestamp, 'gift', {
-        user: g.uniqueId,
+        user: g.nickname || g.uniqueId,
+        userId: g.userId,
+        giftId: g.giftId,
         giftName: g.giftName,
         repeatCount: g.repeatCount,
         diamondCount: g.diamondCount,
@@ -394,7 +397,7 @@ connection.on('member', (msg) => {
 
 // New chat comment received
 connection.on('chat', (msg) => {
-    chatHistory.push({timestamp: Date.now(), uniqueId: msg.uniqueId, comment: msg.comment, userId: msg.userId});
+    chatHistory.push({timestamp: Date.now(), nickname: msg.nickname, uniqueId: msg.uniqueId, comment: msg.comment, userId: msg.userId});
 
     if (window.settings.showChats === "0") return;
 
@@ -405,6 +408,7 @@ connection.on('chat', (msg) => {
 connection.on('gift', (data) => {
     giftHistory.push({
         timestamp: Date.now(),
+        nickname: data.nickname,
         uniqueId: data.uniqueId,
         userId: data.userId,
         giftId: data.giftId,

@@ -61,7 +61,7 @@ function sanitize(value) {
 // Map connector v2 field names back to the v1 names the frontend expects.
 // v2 flattens the raw protobuf (content/count/total/totalUser) instead of the
 // v1 simplified names (comment/likeCount/totalLikeCount/viewerCount).
-function normalize(eventName, msg) {
+function normalize(eventName, msg, availableGifts) {
     if (!msg || typeof msg !== 'object') return msg;
     const m = {...msg};
 
@@ -88,8 +88,14 @@ function normalize(eventName, msg) {
             break;
         case 'gift': {
             // TikTok omits gift metadata from the event; fill it from the room gift
-            // list (extendedGiftInfo) fetched on connect.
-            const info = m.extendedGiftInfo;
+            // list. The connector's own lookup can miss because giftId arrives as a
+            // BigInt/string while the list `id` is a number — so we look it up here
+            // with numeric coercion as a fallback.
+            let info = m.extendedGiftInfo;
+            if ((!info || info.name == null) && Array.isArray(availableGifts) && m.giftId != null) {
+                const gid = Number(m.giftId);
+                info = availableGifts.find((x) => Number(x.id) === gid) || info;
+            }
             if (m.giftName == null && info?.name != null) m.giftName = info.name;
             if (m.describe == null && info?.describe != null) m.describe = info.describe;
             if (m.diamondCount == null && info?.diamond_count != null) m.diamondCount = info.diamond_count;
@@ -252,7 +258,10 @@ io.on('connection', (socket) => {
 
         // Redirect message events (payloads sanitized so socket.io can serialize them)
         FORWARDED_EVENTS.forEach(eventName => {
-            tiktokConnectionWrapper.connection.on(eventName, msg => socket.emit(eventName, sanitize(normalize(eventName, msg))));
+            tiktokConnectionWrapper.connection.on(eventName, msg => {
+                const availableGifts = eventName === 'gift' ? tiktokConnectionWrapper.connection.availableGifts : undefined;
+                socket.emit(eventName, sanitize(normalize(eventName, msg, availableGifts)));
+            });
         });
     });
 
