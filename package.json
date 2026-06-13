@@ -1,0 +1,26 @@
+{
+  "name": "tiktok-live-spy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TikTok LIVE chat reader merged with a local copy of TikTok-Live-Connector for easy customization.",
+  "workspaces": [
+    "connector"
+  ],
+  "scripts": {
+    "build:connector": "npm run build --workspace tiktok-live-connector",
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "postinstall": "npm run build:connector"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "express": "^4.17.2",
+    "https-proxy-agent": "^9.1.0",
+    "node-cache": "^5.1.2",
+    "socket.io": "^4.4.1",
+    "tiktok-live-connector": "*"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

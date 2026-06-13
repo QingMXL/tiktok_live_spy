@@ -1,0 +1,367 @@
+// This will use the demo backend if you open index.html locally via file://, otherwise your server will be used
+let backendUrl = location.protocol === 'file:' ? "https://tiktok-chat-reader.zerody.one/" : undefined;
+let connection = new TikTokIOConnection(backendUrl);
+
+// Counter
+let viewerCount = 0;
+let likeCount = 0;
+let diamondsCount = 0;
+
+// In-memory storage for downloads
+let chatHistory = [];
+let giftHistory = [];
+
+function downloadJSON(data, filename) {
+    let blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+    let url = URL.createObjectURL(blob);
+    let a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+// These settings are defined by obs.html
+if (!window.settings) window.settings = {};
+
+// Auto-scroll toggles (per container, persisted)
+let autoScrollChat = localStorage.getItem('autoScrollChat') !== 'false';
+let autoScrollGift = localStorage.getItem('autoScrollGift') !== 'false';
+
+function updateAutoScrollButtons() {
+    $('#chatAutoScroll').text(autoScrollChat ? 'Auto-scroll: ON' : 'Auto-scroll: OFF');
+    $('#giftAutoScroll').text(autoScrollGift ? 'Auto-scroll: ON' : 'Auto-scroll: OFF');
+}
+
+function toggleChatAutoScroll() {
+    autoScrollChat = !autoScrollChat;
+    localStorage.setItem('autoScrollChat', autoScrollChat);
+    updateAutoScrollButtons();
+}
+
+function toggleGiftAutoScroll() {
+    autoScrollGift = !autoScrollGift;
+    localStorage.setItem('autoScrollGift', autoScrollGift);
+    updateAutoScrollButtons();
+}
+
+let isConnected = false;
+
+function setButtonState(state) {
+    const $connect = $('#connectButton');
+    const $disconnect = $('#disconnectButton');
+    const $input = $('#uniqueIdInput');
+
+    if (state === 'connecting') {
+        $connect.val('Connecting...').prop('disabled', true);
+        $disconnect.hide();
+        $input.prop('disabled', true);
+    } else if (state === 'connected') {
+        isConnected = true;
+        $connect.hide();
+        $disconnect.show();
+        $input.prop('disabled', true);
+    } else {
+        isConnected = false;
+        $connect.val('Connect').prop('disabled', false).show();
+        $disconnect.hide();
+        $input.prop('disabled', false);
+    }
+}
+
+$(document).ready(() => {
+    // Pre-fill last connected username
+    const lastUser = localStorage.getItem('lastUsername');
+    if (lastUser && !window.settings.username) {
+        $('#uniqueIdInput').val(lastUser);
+    }
+
+    $('#connectButton').click(() => {
+        if (typeof connectWithCaptcha === 'function') {
+            connectWithCaptcha();
+        } else {
+            connect();
+        }
+    });
+    $('#disconnectButton').click(disconnect);
+    $('#uniqueIdInput').on('keyup', function (e) {
+        if (e.key === 'Enter') {
+            if (typeof connectWithCaptcha === 'function') {
+                connectWithCaptcha();
+            } else {
+                connect();
+            }
+        }
+    });
+
+    updateAutoScrollButtons();
+
+    if (window.settings.username) connect();
+})
+
+function connect() {
+    let uniqueId = window.settings.username || $('#uniqueIdInput').val();
+    if (uniqueId !== '') {
+
+        $('#stateText').text('');
+        setButtonState('connecting');
+
+        let options = {};
+
+        // Attach reCAPTCHA token from captcha popup (index.html)
+        if (window._pendingRecaptchaToken) {
+            options.recaptchaToken = window._pendingRecaptchaToken;
+            window._pendingRecaptchaToken = null;
+        }
+
+        // Attach bypass token from URL (obs.html)
+        if (window.settings && window.settings.token) {
+            options.bypassToken = window.settings.token;
+        }
+
+        connection.connect(uniqueId, options).then(state => {
+            $('#stateText').text('');
+            setButtonState('connected');
+            localStorage.setItem('lastUsername', uniqueId);
+
+            // reset stats
+            viewerCount = 0;
+            likeCount = 0;
+            diamondsCount = 0;
+            updateRoomStats();
+
+        }).catch(errorMessage => {
+            $('#stateText').text(errorMessage);
+            setButtonState('idle');
+
+            // schedule next try if obs username set
+            if (window.settings.username) {
+                setTimeout(() => {
+                    connect(window.settings.username);
+                }, 30000);
+            }
+        })
+
+    } else {
+        alert('no username entered');
+    }
+}
+
+function disconnect() {
+    connection.disconnect();
+    $('#stateText').text('');
+    setButtonState('idle');
+}
+
+// Prevent Cross site scripting (XSS)
+function sanitize(text) {
+    return text.replace(/</g, '&lt;')
+}
+
+// Render an <img>, but only when a real URL is present, and hide it if the image
+// fails to load (TikTok often omits avatar/gift URLs in live events, and its CDN
+// images may be blocked depending on your network). Avoids broken-image icons.
+function imageTag(url, cssClass) {
+    if (!url || typeof url !== 'string' || !/^https?:\/\//.test(url)) {
+        return `<span class="${cssClass}"></span>`;
+    }
+    return `<img class="${cssClass}" src="${encodeURI(url)}" onerror="this.style.visibility='hidden'">`;
+}
+
+function updateRoomStats() {
+    $('#roomStats').html(`Viewers: <b>${viewerCount.toLocaleString()}</b> Likes: <b>${likeCount.toLocaleString()}</b> Earned Diamonds: <b>${diamondsCount.toLocaleString()}</b>`)
+}
+
+function generateUsernameLink(data) {
+    // TikTok no longer sends `uniqueId` (the @handle) in most live events, only
+    // `nickname`. Link to the profile when we have a real handle; otherwise just
+    // show the (XSS-escaped) display name.
+    let displayName = data.uniqueId || data.nickname || 'unknown';
+    if (data.uniqueId) {
+        return `<a class="usernamelink" href="https://www.tiktok.com/@${encodeURIComponent(data.uniqueId)}" target="_blank">${sanitize(displayName)}</a>`;
+    }
+    return `<span class="usernamelink">${sanitize(displayName)}</span>`;
+}
+
+function isPendingStreak(data) {
+    return data.giftType === 1 && !data.repeatEnd;
+}
+
+/**
+ * Add a new message to the chat container
+ */
+function addChatItem(color, data, text, summarize) {
+    let container = location.href.includes('obs.html') ? $('.eventcontainer') : $('.chatcontainer');
+
+    if (container.find('div').length > 500) {
+        container.find('div').slice(0, 200).remove();
+    }
+
+    container.find('.temporary').remove();
+    ;
+
+    container.append(`
+        <div class=${summarize ? 'temporary' : 'static'}>
+            ${imageTag(data.profilePictureUrl, 'miniprofilepicture')}
+            <span>
+                <b>${generateUsernameLink(data)}:</b>
+                <span style="color:${color}">${sanitize(text)}</span>
+            </span>
+        </div>
+    `);
+
+    if (autoScrollChat || location.href.includes('obs.html')) {
+        container.stop();
+        container.animate({
+            scrollTop: container[0].scrollHeight
+        }, 400);
+    }
+}
+
+/**
+ * Add a new gift to the gift container
+ */
+function addGiftItem(data) {
+    let container = location.href.includes('obs.html') ? $('.eventcontainer') : $('.giftcontainer');
+
+    if (container.find('div').length > 200) {
+        container.find('div').slice(0, 100).remove();
+    }
+
+    let repeatCount = data.repeatCount || 1;
+    let diamondCount = data.diamondCount || 0;
+    let streakId = (data.userId != null ? data.userId.toString() : (data.nickname || 'unknown')) + '_' + data.giftId;
+
+    let html = `
+        <div data-streakid=${isPendingStreak(data) ? streakId : ''}>
+            ${imageTag(data.profilePictureUrl, 'miniprofilepicture')}
+            <span>
+                <b>${generateUsernameLink(data)}:</b> <span>${sanitize(data.describe || 'sent a gift')}</span><br>
+                <div>
+                    <table>
+                        <tr>
+                            <td>${imageTag(data.giftPictureUrl, 'gifticon')}</td>
+                            <td>
+                                <span>Name: <b>${sanitize(data.giftName || 'Gift')}</b> (ID:${data.giftId})<span><br>
+                                <span>Repeat: <b style="${isPendingStreak(data) ? 'color:red' : ''}">x${repeatCount.toLocaleString()}</b><span><br>
+                                <span>Cost: <b>${(diamondCount * repeatCount).toLocaleString()} Diamonds</b><span>
+                            </td>
+                        </tr>
+                    </tabl>
+                </div>
+            </span>
+        </div>
+    `;
+
+    let existingStreakItem = container.find(`[data-streakid='${streakId}']`);
+
+    if (existingStreakItem.length) {
+        existingStreakItem.replaceWith(html);
+    } else {
+        container.append(html);
+    }
+
+    if (autoScrollGift || location.href.includes('obs.html')) {
+        container.stop();
+        container.animate({
+            scrollTop: container[0].scrollHeight
+        }, 800);
+    }
+}
+
+
+// viewer stats
+connection.on('roomUser', (msg) => {
+    if (typeof msg.viewerCount === 'number') {
+        viewerCount = msg.viewerCount;
+        updateRoomStats();
+    }
+})
+
+// like stats
+connection.on('like', (msg) => {
+    if (typeof msg.totalLikeCount === 'number') {
+        likeCount = msg.totalLikeCount;
+        updateRoomStats();
+    }
+
+    if (window.settings.showLikes === "0") return;
+
+    if (typeof msg.likeCount === 'number') {
+        let likeLabel = msg.label ? msg.label.replace('{0:user}', '').replace('likes', `${msg.likeCount} likes`) : `${msg.likeCount} likes`;
+        addChatItem('#447dd4', msg, likeLabel)
+    }
+})
+
+// Member join
+let joinMsgDelay = 0;
+connection.on('member', (msg) => {
+    if (window.settings.showJoins === "0") return;
+
+    let addDelay = 250;
+    if (joinMsgDelay > 500) addDelay = 100;
+    if (joinMsgDelay > 1000) addDelay = 0;
+
+    joinMsgDelay += addDelay;
+
+    setTimeout(() => {
+        joinMsgDelay -= addDelay;
+        addChatItem('#21b2c2', msg, 'joined', true);
+    }, joinMsgDelay);
+})
+
+// New chat comment received
+connection.on('chat', (msg) => {
+    chatHistory.push({timestamp: Date.now(), uniqueId: msg.uniqueId, comment: msg.comment, userId: msg.userId});
+
+    if (window.settings.showChats === "0") return;
+
+    addChatItem('', msg, msg.comment);
+})
+
+// New gift received
+connection.on('gift', (data) => {
+    giftHistory.push({
+        timestamp: Date.now(),
+        uniqueId: data.uniqueId,
+        userId: data.userId,
+        giftId: data.giftId,
+        giftName: data.giftName,
+        repeatCount: data.repeatCount,
+        diamondCount: data.diamondCount,
+        repeatEnd: data.repeatEnd
+    });
+
+    if (!isPendingStreak(data) && data.diamondCount > 0) {
+        diamondsCount += (data.diamondCount * data.repeatCount);
+        updateRoomStats();
+    }
+
+    if (window.settings.showGifts === "0") return;
+
+    addGiftItem(data);
+})
+
+// follow
+connection.on('follow', (data) => {
+    if (window.settings.showFollows === "0") return;
+    addChatItem('#ff005e', data, 'followed');
+})
+
+// share
+connection.on('share', (data) => {
+    if (window.settings.showFollows === "0") return;
+    addChatItem('#2fb816', data, 'shared');
+})
+
+connection.on('streamEnd', () => {
+    $('#stateText').text('Stream ended. Reconnecting...');
+    setButtonState('idle');
+
+    // schedule next try if obs username set
+    if (window.settings.username) {
+        setTimeout(() => {
+            connect(window.settings.username);
+        }, 30000);
+    }
+})

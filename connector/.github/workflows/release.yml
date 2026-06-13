@@ -1,0 +1,137 @@
+name: "Release (TypeScript): Build & Publish to npm"
+
+on:
+    workflow_dispatch:
+        inputs:
+            bump:
+                description: 'Version bump type (use "manual" to set an exact version below)'
+                type: choice
+                options:
+                    - patch
+                    - minor
+                    - major
+                    - manual
+                default: patch
+            manual_version:
+                description: 'Exact version when bump = manual (e.g. 2.3.0-alpha1). Ignored otherwise.'
+                type: string
+                required: false
+                default: ''
+
+permissions:
+    contents: write
+    id-token: write
+
+jobs:
+    check-branch:
+        runs-on: ubuntu-latest
+        steps:
+            -   name: Enforce ts-rewrite branch
+                if: github.ref != 'refs/heads/ts-rewrite'
+                run: |
+                    echo "::error::Release must be triggered from the ts-rewrite branch, got ${{ github.ref }}"
+                    exit 1
+
+    release:
+        needs: check-branch
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+            id-token: write
+        steps:
+            -   uses: actions/checkout@v4
+
+            -   uses: actions/setup-node@v4
+                with:
+                    node-version: '24'
+                    registry-url: 'https://registry.npmjs.org'
+
+            -   name: Ensure npm supports trusted publishing
+                run: npm install -g npm@11
+
+            -   name: Install pnpm
+                run: npm install -g pnpm
+
+            -   name: Install dependencies
+                run: pnpm install --frozen-lockfile
+
+            -   name: Bump version
+                run: |
+                    if [ "${{ inputs.bump }}" = "manual" ]; then
+                      if [ -z "${{ inputs.manual_version }}" ]; then
+                        echo "::error::manual_version is required when bump = manual"
+                        exit 1
+                      fi
+                      npm version "${{ inputs.manual_version }}" --no-git-tag-version --allow-same-version
+                    else
+                      npm version "${{ inputs.bump }}" --no-git-tag-version
+                    fi
+
+            -   name: Read new version
+                id: version
+                run: |
+                    VERSION=$(node -p "require('./package.json').version")
+                    # Derive the dist-tag: 2.3.0-alpha1 -> alpha, 2.3.0-beta1 -> beta, 2.3.0 -> latest
+                    TAG=$(node -p "
+                        const v = require('./package.json').version;
+                        const m = v.match(/-([a-z]+)/i);
+                        m ? m[1].toLowerCase() : 'latest';
+                    ")
+                    echo "version=$VERSION" >> $GITHUB_OUTPUT
+                    echo "tag=$TAG" >> $GITHUB_OUTPUT
+                    echo "Publishing $VERSION under dist-tag '$TAG'"
+
+            -   name: Write src/version.ts
+                run: |
+                    printf 'export const VERSION: string = "%s";\n' "${{ steps.version.outputs.version }}" > src/version.ts
+
+            -   name: Build
+                run: pnpm run build
+
+            -   name: Strip GitHub alert markers from README for npm tarball
+                # GitHub renders `> [!NOTE]` style alerts as styled callouts; npm's
+                # markdown renderer doesn't, leaving literal `[!NOTE]` in the README.
+                # Rewrite each marker to a plain bold label so npm renders cleanly.
+                # Edit happens on the runner only — the repo's README.md is untouched.
+                run: |
+                    sed -E -i \
+                      -e 's/^> \[!NOTE\][[:space:]]*(.*)$/> **Note:** \1/' \
+                      -e 's/^> \[!TIP\][[:space:]]*(.*)$/> **Tip:** \1/' \
+                      -e 's/^> \[!IMPORTANT\][[:space:]]*(.*)$/> **Important:** \1/' \
+                      -e 's/^> \[!WARNING\][[:space:]]*(.*)$/> **Warning:** \1/' \
+                      -e 's/^> \[!CAUTION\][[:space:]]*(.*)$/> **Caution:** \1/' \
+                      README.md
+
+            -   name: Publish to npm
+                # Publish from the project root so npm packages `dist/` (per `files`),
+                # plus the root README.md and LICENSE that npm always auto-includes.
+                # Publishing from `dist/` makes npm follow the copied package.json's
+                # `files: ["dist"]` to a non-existent `dist/dist/` and ship an empty tarball.
+                run: npm publish --provenance --access public --tag "${{ steps.version.outputs.tag }}"
+
+            -   name: Commit release
+                run: |
+                    git config user.name "github-actions[bot]"
+                    git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                    git add package.json package-lock.json pnpm-lock.yaml src/version.ts 2>/dev/null || true
+                    if git diff --cached --quiet; then
+                      echo "No release-related changes to commit (version already at ${{ steps.version.outputs.version }})"
+                    else
+                      git commit -m "chore: release tiktok-live-connector v${{ steps.version.outputs.version }} [skip ci]"
+                      git push
+                    fi
+
+            -   name: Create git tag
+                run: |
+                    TAG="v${{ steps.version.outputs.version }}"
+                    if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+                      echo "Local tag $TAG already exists, skipping tag creation"
+                    elif git ls-remote --exit-code --tags origin "$TAG" >/dev/null 2>&1; then
+                      echo "Remote tag $TAG already exists on origin, skipping push"
+                    else
+                      git tag "$TAG"
+                      git push origin "$TAG"
+                    fi
+
+            -   name: Summary
+                run: echo "### Published tiktok-live-connector@${{ steps.version.outputs.version }} under dist-tag \`${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY

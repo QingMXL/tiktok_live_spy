@@ -1,0 +1,31 @@
+{
+    "include": [
+        "src/**/*"
+    ],
+    "compilerOptions": {
+        "allowJs": false,
+        "strictNullChecks": true,
+        "experimentalDecorators": true,
+        "moduleResolution": "Bundler",
+        "module": "ESNext",
+        "target": "ES2022",
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "declaration": true,
+        "outDir": "dist",
+        "declarationMap": true,
+        "sourceMap": true,
+        "inlineSources": true,
+        "rootDir": "src",
+        "typeRoots": [
+            "node_modules/@types",
+            "src/types"
+        ],
+        "resolveJsonModule": true,
+        "paths": {
+            "@/*": [
+                "./src/*"
+            ]
+        }
+    }
+}
