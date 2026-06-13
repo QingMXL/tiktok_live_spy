@@ -11,9 +11,13 @@ let diamondsCount = 0;
 let chatHistory = [];
 let giftHistory = [];
 let transcriptHistory = [];
+let cardHistory = [];
 
 // Live video (hls.js) instance
 let hlsPlayer = null;
+
+// Timer that simulates valuable cards being pulled during the stream (mock data)
+let cardSimTimer = null;
 
 function downloadJSON(data, filename) {
     let blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
@@ -61,6 +65,14 @@ function downloadAll() {
     transcriptHistory.forEach(t => events.push(buildEvent(t.timestamp, 'transcript', {
         text: t.text,
     })));
+    cardHistory.forEach(c => events.push(buildEvent(c.timestamp, 'card', {
+        name: c.name,
+        grade: c.grade,
+        set: c.set,
+        value: c.value,
+        lastSale: c.lastSale,
+        image: c.image,
+    })));
 
     if (!events.length) {
         alert('Nothing to download yet.');
@@ -102,6 +114,7 @@ function updateAutoScrollButtons() {
     $('#chatAutoScroll').text(autoScrollChat ? 'Auto-scroll: ON' : 'Auto-scroll: OFF');
     $('#giftAutoScroll').text(autoScrollGift ? 'Auto-scroll: ON' : 'Auto-scroll: OFF');
     $('#transcriptAutoScroll').text(autoScrollTranscript ? 'Auto-scroll: ON' : 'Auto-scroll: OFF');
+    $('#cardAutoScroll').text(autoScrollCard ? 'Auto-scroll: ON' : 'Auto-scroll: OFF');
 }
 
 function toggleChatAutoScroll() {
@@ -119,6 +132,13 @@ function toggleGiftAutoScroll() {
 function toggleTranscriptAutoScroll() {
     autoScrollTranscript = !autoScrollTranscript;
     localStorage.setItem('autoScrollTranscript', autoScrollTranscript);
+    updateAutoScrollButtons();
+}
+
+let autoScrollCard = localStorage.getItem('autoScrollCard') !== 'false';
+function toggleCardAutoScroll() {
+    autoScrollCard = !autoScrollCard;
+    localStorage.setItem('autoScrollCard', autoScrollCard);
     updateAutoScrollButtons();
 }
 
@@ -213,6 +233,7 @@ function connect() {
             $('.giftcontainer > div').remove();
             resetTranscript();
             resetVideo();
+            startCardSimulation();   // mock valuable-card feed for the new stream
 
         }).catch(errorMessage => {
             $('#stateText').text(errorMessage);
@@ -236,6 +257,7 @@ function disconnect() {
     $('#stateText').text('');
     setButtonState('idle');
     resetVideo();
+    resetCards();
 }
 
 // Prevent Cross site scripting (XSS)
@@ -444,6 +466,7 @@ connection.on('streamEnd', () => {
     $('#stateText').text('Stream ended. Reconnecting...');
     setButtonState('idle');
     resetVideo();
+    resetCards();
 
     // schedule next try if obs username set
     if (window.settings.username) {
@@ -561,3 +584,84 @@ connection.on('streamInfo', (info) => {
         $('#videoNotice').text('No video stream available for this user.').show();
     }
 })
+
+// ---------------------------------------------------------------------------
+// Valuable cards column — records valuable cards the streamer pulls.
+// Currently driven by MOCK DATA (replace addCard() input with a real card feed
+// later, e.g. a grading/price API like the Crossing Pokémon Index).
+// ---------------------------------------------------------------------------
+
+// Pool of well-known graded cards used to simulate pulls. Images are public
+// Pokémon TCG card scans; value / lastSale are illustrative USD figures.
+const CARD_POOL = [
+    {name: 'Charizard', set: 'Base Set · 1999', grade: 'PSA 10', image: 'https://images.pokemontcg.io/base1/4.png', value: 12500, lastSale: 11800},
+    {name: 'Blastoise', set: 'Base Set · 1999', grade: 'PSA 9', image: 'https://images.pokemontcg.io/base1/2.png', value: 2150, lastSale: 1990},
+    {name: 'Venusaur', set: 'Base Set · 1999', grade: 'PSA 10', image: 'https://images.pokemontcg.io/base1/15.png', value: 3400, lastSale: 3120},
+    {name: 'Mewtwo', set: 'Base Set · 1999', grade: 'PSA 9', image: 'https://images.pokemontcg.io/base1/10.png', value: 640, lastSale: 580},
+    {name: 'Pikachu', set: 'Base Set · 1999', grade: 'PSA 8', image: 'https://images.pokemontcg.io/base1/58.png', value: 420, lastSale: 395},
+    {name: 'Gyarados', set: 'Base Set · 1999', grade: 'PSA 10', image: 'https://images.pokemontcg.io/base1/6.png', value: 1850, lastSale: 1700},
+    {name: 'Alakazam', set: 'Base Set · 1999', grade: 'PSA 9', image: 'https://images.pokemontcg.io/base1/1.png', value: 510, lastSale: 470},
+    {name: 'Raichu', set: 'Base Set · 1999', grade: 'PSA 9', image: 'https://images.pokemontcg.io/base1/14.png', value: 560, lastSale: 520},
+    {name: 'Zapdos', set: 'Base Set · 1999', grade: 'PSA 8', image: 'https://images.pokemontcg.io/base1/16.png', value: 330, lastSale: 300},
+    {name: 'Ninetales', set: 'Base Set · 1999', grade: 'PSA 10', image: 'https://images.pokemontcg.io/base1/12.png', value: 980, lastSale: 910},
+];
+
+function formatMoney(n) {
+    return '$' + Number(n || 0).toLocaleString();
+}
+
+function resetCards() {
+    if (cardSimTimer) { clearInterval(cardSimTimer); cardSimTimer = null; }
+    cardHistory = [];
+    $('.cardcontainer > div.cardline').remove();
+}
+
+// Render a card entry (newest at the bottom, like the other live columns).
+function addCardItem(card) {
+    cardHistory.push({timestamp: Date.now(), ...card});
+
+    const container = $('.cardcontainer');
+    if (container.find('div.cardline').length > 200) {
+        container.find('div.cardline').slice(0, 100).remove();
+    }
+
+    const time = formatClock(new Date());
+    const saleLine = card.lastSale
+        ? `last sale ${formatMoney(card.lastSale)}`
+        : 'no recent sales';
+
+    container.append(`
+        <div class="cardline">
+            <div class="cardimgwrap">${imageTag(card.image, 'cardimg')}</div>
+            <div class="cardinfo">
+                <div class="cardname">${sanitize(card.name)} <span class="cardgrade">${sanitize(card.grade || '')}</span></div>
+                <div class="cardset">${sanitize(card.set || '')}</div>
+                <div class="cardvalrow">
+                    <span class="cardval">${formatMoney(card.value)}</span>
+                    <span class="cardsale">${saleLine}</span>
+                </div>
+                <div class="cardtime">pulled ${time}</div>
+            </div>
+        </div>
+    `);
+
+    if (autoScrollCard) {
+        container.stop();
+        container.animate({scrollTop: container[0].scrollHeight}, 300);
+    }
+}
+
+// Pick a random card from the pool with slightly varied price figures.
+function simulateCardPull() {
+    const base = CARD_POOL[Math.floor(Math.random() * CARD_POOL.length)];
+    const jitter = (n) => Math.round(n * (0.9 + Math.random() * 0.2));
+    addCardItem({...base, value: jitter(base.value), lastSale: jitter(base.lastSale)});
+}
+
+// Seed a couple of cards, then keep "pulling" one every ~12-20s while live.
+function startCardSimulation() {
+    resetCards();
+    simulateCardPull();
+    simulateCardPull();
+    cardSimTimer = setInterval(simulateCardPull, 12000 + Math.floor(Math.random() * 8000));
+}
