@@ -53,8 +53,18 @@ function downloadAll() {
         ...rest,
     }));
 
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    downloadJSON(timeline, `tiktok-live-spy-${stamp}.json`);
+    // Filename: <streamer id>_<start>_<end>  (start/end = first/last captured event)
+    const fmtStamp = (ms) => {
+        const d = new Date(ms);
+        const p = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    };
+    const rawId = (connection && connection.uniqueId) || $('#uniqueIdInput').val() || 'tiktok';
+    const streamerId = rawId.trim().replace(/^@/, '').replace(/[^\w.-]/g, '_') || 'tiktok';
+    const startStamp = fmtStamp(events[0].timestamp);
+    const endStamp = fmtStamp(events[events.length - 1].timestamp);
+
+    downloadJSON(timeline, `${streamerId}_${startStamp}_${endStamp}.json`);
 }
 
 // These settings are defined by obs.html
