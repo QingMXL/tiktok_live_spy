@@ -21,7 +21,9 @@ Config via environment variables:
     WHISPER_LANGUAGE  fixed language code, or empty for auto-detect (default: auto)
     WHISPER_COMPUTE   ctranslate2 compute type (default: int8)
     WHISPER_DEVICE    cpu | cuda (default: cpu)
-    WHISPER_MAX_SEG   max seconds before a forced flush (default: 8)
+    WHISPER_MAX_SEG   max seconds before a forced flush (default: 4)
+    WHISPER_BEAM      beam size; 1 = fastest, higher = more accurate/slower (default: 1)
+    WHISPER_CPU_THREADS  ctranslate2 CPU threads (default: physical cores)
     WHISPER_DEBUG     set to anything to log timing to stderr
 """
 
@@ -32,11 +34,10 @@ import time
 import numpy as np
 
 SAMPLING_RATE = 16000
-FRAME = 0.5                      # seconds of audio read per loop
+FRAME = 0.32                     # seconds of audio read per loop (finer = faster endpointing)
 SILENCE_RMS = 0.008             # below this RMS a frame is considered silence
-SILENCE_HANG = 0.6              # seconds of trailing silence that ends a phrase
-MIN_SEG = 1.0                   # don't flush segments shorter than this
-PARTIAL_EVERY = 2.5             # emit a live partial after this much un-flushed speech
+SILENCE_HANG = 0.35            # seconds of trailing silence that ends a phrase
+MIN_SEG = 0.8                   # don't flush segments shorter than this
 DEBUG = os.environ.get("WHISPER_DEBUG", "") != ""
 
 
@@ -52,17 +53,18 @@ def dbg(msg):
 
 
 class Segmenter:
-    def __init__(self, model, language, max_seg):
+    def __init__(self, model, language, max_seg, beam_size):
         self.model = model
         self.language = language or None
         self.max_seg = max_seg
+        self.beam_size = beam_size
         self.buffer = np.array([], dtype=np.float32)
         self.segment_start = 0.0      # absolute stream time of buffer[0]
         self.stream_time = 0.0        # absolute time of all audio consumed
         self.silence_run = 0.0        # trailing silence accumulated
         self.had_speech = False
         self.detected_language = None
-        self.last_partial_len = 0.0
+        self.last_final_text = ""     # fed back as context to improve accuracy
 
     def add(self, audio):
         self.buffer = np.append(self.buffer, audio)
@@ -86,31 +88,23 @@ class Segmenter:
             return True
         return False
 
-    def should_partial(self):
-        return self.had_speech and (self.seg_len - self.last_partial_len) >= PARTIAL_EVERY
-
     def _transcribe(self):
         segments, info = self.model.transcribe(
             self.buffer,
             language=self.language,
-            beam_size=1,
+            beam_size=self.beam_size,
             temperature=0.0,
             no_repeat_ngram_size=3,
             condition_on_previous_text=False,
+            # Feed the previous phrase as context — improves accuracy/continuity for
+            # free (unlike condition_on_previous_text it won't trigger runaway loops).
+            initial_prompt=self.last_final_text or None,
             vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=300, threshold=0.5),
+            vad_parameters=dict(min_silence_duration_ms=250, threshold=0.5),
         )
         text = " ".join(s.text.strip() for s in segments
                         if not (s.no_speech_prob and s.no_speech_prob > 0.6)).strip()
         return text, info
-
-    def partial(self):
-        self.last_partial_len = self.seg_len
-        t0 = time.time()
-        text, info = self._transcribe()
-        dbg(f"partial seg={self.seg_len:.1f}s infer={time.time()-t0:.2f}s text='{text[:40]}'")
-        if text:
-            emit({"type": "partial", "text": text})
 
     def flush(self):
         seg_len = self.seg_len
@@ -126,6 +120,7 @@ class Segmenter:
             emit({"type": "language", "language": info.language})
 
         if text:
+            self.last_final_text = text
             emit({
                 "type": "final",
                 "start": round(self.segment_start, 2),
@@ -141,7 +136,6 @@ class Segmenter:
         self.segment_start = self.stream_time
         self.silence_run = 0.0
         self.had_speech = False
-        self.last_partial_len = 0.0
 
 
 def main():
@@ -149,15 +143,20 @@ def main():
     language = os.environ.get("WHISPER_LANGUAGE", "").strip()
     compute_type = os.environ.get("WHISPER_COMPUTE", "int8")
     device = os.environ.get("WHISPER_DEVICE", "cpu")
-    max_seg = float(os.environ.get("WHISPER_MAX_SEG", "8"))
+    max_seg = float(os.environ.get("WHISPER_MAX_SEG", "4"))
+    beam_size = int(os.environ.get("WHISPER_BEAM", "1"))
+    # Default to physical cores; oversubscribing logical (hyperthreaded) cores slows
+    # down ctranslate2 int8 GEMM. Override with WHISPER_CPU_THREADS.
+    cpu_threads = int(os.environ.get("WHISPER_CPU_THREADS", str(max(1, (os.cpu_count() or 4) // 2))))
 
     from faster_whisper import WhisperModel
 
-    emit({"type": "status", "message": f"loading model {model_size} ({device}/{compute_type})"})
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+    emit({"type": "status", "message": f"loading model {model_size} ({device}/{compute_type}, {cpu_threads} threads)"})
+    model = WhisperModel(model_size, device=device, compute_type=compute_type,
+                         cpu_threads=cpu_threads, num_workers=1)
     emit({"type": "ready"})
 
-    seg = Segmenter(model, language, max_seg)
+    seg = Segmenter(model, language, max_seg, beam_size)
     bytes_per_frame = int(SAMPLING_RATE * FRAME) * 2
     stdin = sys.stdin.buffer
 
@@ -170,11 +169,12 @@ def main():
         audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
         seg.add(audio)
 
+        # Transcribe each segment exactly once (on endpoint or max length). Re-running
+        # Whisper on a growing buffer for live partials cannot keep up on CPU, so we
+        # avoid redundant work and emit a final per phrase — this stays real-time.
         try:
             if seg.should_flush():
                 seg.flush()
-            elif seg.should_partial():
-                seg.partial()
         except Exception as exc:
             emit({"type": "error", "message": str(exc)})
             seg._reset()

@@ -168,13 +168,16 @@ function connect() {
             setButtonState('connected');
             localStorage.setItem('lastUsername', uniqueId);
 
-            // reset stats
+            // wipe all previous stream data so a switched streamer starts fresh
             viewerCount = 0;
             likeCount = 0;
             diamondsCount = 0;
             updateRoomStats();
 
-            // reset transcript + video for the new stream
+            chatHistory = [];
+            giftHistory = [];
+            $('.chatcontainer > div').remove();   // remove message rows (keeps the <h3> header)
+            $('.giftcontainer > div').remove();
             resetTranscript();
             resetVideo();
 
