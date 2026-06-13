@@ -25,6 +25,38 @@ function downloadJSON(data, filename) {
     URL.revokeObjectURL(url);
 }
 
+// Merge chats, gifts and transcript into one timeline-ordered file (by timestamp).
+function downloadAll() {
+    const events = [];
+
+    chatHistory.forEach(c => events.push({
+        timestamp: c.timestamp, type: 'chat', user: c.uniqueId, text: c.comment,
+    }));
+    giftHistory.forEach(g => events.push({
+        timestamp: g.timestamp, type: 'gift', user: g.uniqueId,
+        giftName: g.giftName, repeatCount: g.repeatCount, diamondCount: g.diamondCount,
+    }));
+    transcriptHistory.forEach(t => events.push({
+        timestamp: t.timestamp, type: 'transcript', text: t.text,
+    }));
+
+    if (!events.length) {
+        alert('Nothing to download yet.');
+        return;
+    }
+
+    events.sort((a, b) => a.timestamp - b.timestamp);
+
+    // Replace raw epoch with a readable ISO time, keeping events ordered by timeline.
+    const timeline = events.map(({timestamp, ...rest}) => ({
+        time: new Date(timestamp).toISOString(),
+        ...rest,
+    }));
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    downloadJSON(timeline, `tiktok-live-spy-${stamp}.json`);
+}
+
 // These settings are defined by obs.html
 if (!window.settings) window.settings = {};
 

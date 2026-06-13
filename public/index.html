@@ -135,15 +135,7 @@
 </head>
 <body>
 <div class="head">
-    <h1>TikTok LIVE Chat Reader</h1>
-    <span class="subTitle">Source: <a href="https://github.com/zerodytrash/TikTok-Chat-Reader">https://github.com/zerodytrash/TikTok-Chat-Reader</a></span>
-</div>
-
-<div>
-    A chat reader for <a href="https://www.tiktok.com/live">TikTok LIVE</a> utilizing <a
-        href="https://github.com/zerodytrash/TikTok-Live-Connector">TikTok-Live-Connector</a> and <a
-        href="https://socket.io/">Socket.IO</a> to forward the data to the client. More Tools available at <a
-        href="https://tikfinity.zerody.one/" target="_blank">TikFinity</a>.
+    <h1>TikTok Live Spy</h1>
 </div>
 
 <div class="inputFields">
@@ -152,6 +144,7 @@
     <input type="button" id="connectButton" value="Connect">
     <input type="button" id="disconnectButton" class="disconnect" value="Disconnect" style="display:none">
     <a href="#" onclick="generateOverlay()">Generate Overlay URL</a>
+    <button class="downloadbtn" id="downloadAllBtn" onclick="downloadAll()">Download</button>
 </div>
 
 <div class="splitstatebar">
@@ -162,17 +155,17 @@
 <div class="splitchattable">
     <div>
         <div class="chatcontainer">
-            <h3 class="containerheader"><span>Chats</span><span class="headeractions"><button class="downloadbtn" id="chatAutoScroll" onclick="toggleChatAutoScroll()">Auto-scroll: ON</button><button class="downloadbtn" onclick="downloadJSON(chatHistory, 'chats.json')">Download</button></span></h3>
+            <h3 class="containerheader"><span>Chats</span><span class="headeractions"><button class="downloadbtn" id="chatAutoScroll" onclick="toggleChatAutoScroll()">Auto-scroll: ON</button></span></h3>
         </div>
     </div>
     <div>
         <div class="giftcontainer">
-            <h3 class="containerheader"><span>Gifts</span><span class="headeractions"><button class="downloadbtn" id="giftAutoScroll" onclick="toggleGiftAutoScroll()">Auto-scroll: ON</button><button class="downloadbtn" onclick="downloadJSON(giftHistory, 'gifts.json')">Download</button></span></h3>
+            <h3 class="containerheader"><span>Gifts</span><span class="headeractions"><button class="downloadbtn" id="giftAutoScroll" onclick="toggleGiftAutoScroll()">Auto-scroll: ON</button></span></h3>
         </div>
     </div>
     <div>
         <div class="transcriptcontainer">
-            <h3 class="containerheader"><span>Transcript</span><span class="headeractions"><button class="downloadbtn" id="transcriptAutoScroll" onclick="toggleTranscriptAutoScroll()">Auto-scroll: ON</button><button class="downloadbtn" onclick="downloadJSON(transcriptHistory, 'transcript.json')">Download</button></span></h3>
+            <h3 class="containerheader"><span>Transcript</span><span class="headeractions"><button class="downloadbtn" id="transcriptAutoScroll" onclick="toggleTranscriptAutoScroll()">Auto-scroll: ON</button></span></h3>
             <div class="transcriptpartial" id="transcriptPartial"></div>
         </div>
     </div>
